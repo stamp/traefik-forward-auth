@@ -8,11 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/davecgh/go-spew/spew"
 )
 
 // Forward Auth
@@ -181,8 +184,15 @@ func (f *ForwardAuth) GetUser(token string) (User, error) {
 		return user, err
 	}
 
-	defer res.Body.Close()
-	err = json.NewDecoder(res.Body).Decode(&user)
+	body, err := ioutil.ReadAll(res.Body)
+	res.Body.Close()
+
+	//err = json.NewDecoder(res.Body).Decode(&user)
+
+	err = json.Unmarshal(body, &user)
+
+	spew.Dump(user)
+	spew.Dump(string(body))
 
 	return user, err
 }
@@ -199,7 +209,7 @@ func (f *ForwardAuth) redirectBase(r *http.Request) string {
 
 // Return url
 func (f *ForwardAuth) returnUrl(r *http.Request) string {
-	path := r.Header.Get("X-Forwarded-Uri")
+	path := r.Header.Get("X-Forwarded-Prefix") + r.Header.Get("X-Forwarded-Uri")
 
 	return fmt.Sprintf("%s%s", f.redirectBase(r), path)
 }

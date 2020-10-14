@@ -22,23 +22,24 @@ var log logrus.FieldLogger
 func handler(w http.ResponseWriter, r *http.Request) {
 	// Logging setup
 	logger := log.WithFields(logrus.Fields{
-		"SourceIP": r.Header.Get("X-Forwarded-For"),
+		"source-ip": r.Header.Get("X-Forwarded-For"),
 	})
-	logger.WithFields(logrus.Fields{
-		"Headers": r.Header,
-	}).Debugf("Handling request")
 
 	// Parse uri
-	uri, err := url.Parse(r.Header.Get("X-Forwarded-Uri"))
+	uri, err := url.Parse(r.Header.Get("X-Forwarded-Prefix") + r.Header.Get("X-Forwarded-Uri"))
 	if err != nil {
-		logger.Errorf("Error parsing X-Forwarded-Uri, %v", err)
+		logger.WithFields(logrus.Fields{
+			"X-Forwarded-Prefix": r.Header.Get("X-Forwarded-Prefix"),
+			"X-Forwarded-Uri":    r.Header.Get("X-Forwarded-Uri"),
+		}).Errorf("Error parsing uri, %v", err)
 		http.Error(w, "Service unavailable", 503)
 		return
 	}
 
-	// Handle callback
 	if uri.Path == fw.Path {
-		logger.Debugf("Passing request to auth callback")
+		logger.WithFields(logrus.Fields{
+			"path": uri.Path,
+		}).Debugf("Passing request to auth callback")
 		handleCallback(w, r, uri.Query(), logger)
 		return
 	}
@@ -49,27 +50,32 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		// Error indicates no cookie, generate nonce
 		err, nonce := fw.Nonce()
 		if err != nil {
-			logger.Errorf("Error generating nonce, %v", err)
+			logger.WithFields(logrus.Fields{
+				"path": uri.Path,
+			}).Errorf("Error generating nonce, %v", err)
 			http.Error(w, "Service unavailable", 503)
 			return
 		}
 
 		// Set the CSRF cookie
 		http.SetCookie(w, fw.MakeCSRFCookie(r, nonce))
-		logger.Debug("Set CSRF cookie and redirecting to oidc login")
-		logger.Debug("uri.Path was %s",uri.Path)
-		logger.Debug("fw.Path was %s",fw.Path)
+		redirect := fw.GetLoginURL(r, nonce)
 
 		// Forward them on
-		http.Redirect(w, r, fw.GetLoginURL(r, nonce), http.StatusTemporaryRedirect)
-
+		logger.WithFields(logrus.Fields{
+			"path":     uri.Path,
+			"redirect": redirect,
+		}).Debug("Set CSRF cookie and redirecting to oidc login")
+		http.Redirect(w, r, redirect, http.StatusTemporaryRedirect)
 		return
 	}
 
 	// Validate cookie
 	valid, email, err := fw.ValidateCookie(r, c)
 	if !valid {
-		logger.Errorf("Invalid cookie: %v", err)
+		logger.WithFields(logrus.Fields{
+			"path": uri.Path,
+		}).Errorf("Invalid cookie: %v", err)
 		http.Error(w, "Not authorized", 401)
 		return
 	}
@@ -78,6 +84,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	valid = fw.ValidateEmail(email)
 	if !valid {
 		logger.WithFields(logrus.Fields{
+			"path":  uri.Path,
 			"email": email,
 		}).Errorf("Invalid email")
 		http.Error(w, "Not authorized", 401)
@@ -85,7 +92,12 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Valid request
-	logger.Debugf("Allowing valid request ")
+	logger.WithFields(logrus.Fields{
+		//"Headers": r.Header,
+		"path":  uri.Path,
+		"email": email,
+	}).Debugf("Allowing valid request")
+
 	w.Header().Set("X-Forwarded-User", email)
 	w.WriteHeader(200)
 }
@@ -134,8 +146,9 @@ func handleCallback(w http.ResponseWriter, r *http.Request, qs url.Values,
 	// Generate cookie
 	http.SetCookie(w, fw.MakeCookie(r, user.Email))
 	logger.WithFields(logrus.Fields{
-		"user": user.Email,
-	}).Infof("Generated auth cookie")
+		"user":     user.Email,
+		"redirect": redirect,
+	}).Infof("Generate auth cookie and redirect back")
 
 	// Redirect
 	http.Redirect(w, r, redirect, http.StatusTemporaryRedirect)
